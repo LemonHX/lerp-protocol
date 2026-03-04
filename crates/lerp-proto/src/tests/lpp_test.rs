@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     identity::SecretKey,
     lpp::{
-        self, AddrOffer, Close, Hello, HelloAck, Ping, Pong, ProbeSuccess, LPP_VERSION,
+        self, AddrOffer, Close, Hello, HelloAck, Ping, Pong, ProbeSuccess, Qad, LPP_VERSION,
     },
     LppMessage,
 };
@@ -95,6 +95,12 @@ fn direct_upgrade_roundtrip() {
 #[test]
 fn direct_ack_roundtrip() {
     assert_eq!(roundtrip(&LppMessage::DirectAck), LppMessage::DirectAck);
+}
+
+#[test]
+fn qad_roundtrip() {
+    let msg = LppMessage::Qad(Qad { addr: "203.0.113.9:44321".into() });
+    assert_eq!(roundtrip(&msg), msg);
 }
 
 #[test]

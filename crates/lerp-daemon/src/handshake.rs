@@ -202,7 +202,7 @@ pub async fn responder_handshake(
     // ─── Derive session keys ──────────────────────────────────────────────
     let shared = ecdh.complete(&peer_ecdh_pub);
     let session_keys = SessionKeys::derive(shared.as_bytes(), &ecdh_pub, &peer_ecdh_pub)?;
-    tracing::info!(peer = %peer_eid.to_base32(), "handshake[resp]: complete");;
+    tracing::info!(peer = %peer_eid.to_base32(), "handshake[resp]: complete");
 
     Ok(HandshakeResult {
         peer_eid,

@@ -36,6 +36,11 @@ pub enum LppMessage {
     DirectUpgrade,
     /// `"DA"` – responder acknowledges direct upgrade (daemon profile only).
     DirectAck,
+    /// `"QAD"` – relay-observed address discovery response.
+    ///
+    /// Relay→daemon control message carrying the daemon's externally observed
+    /// socket address (`ip:port`) as seen by relay.
+    Qad(Qad),
     /// `"PI"` – keepalive ping (datagram).
     Ping(Ping),
     /// `"PO"` – keepalive pong (datagram).
@@ -108,6 +113,16 @@ pub struct ProbeSuccess {
     pub addr: String,
 }
 
+/// `QAD` message (`"QAD"`).
+///
+/// Sent by relay to each endpoint after relay-side accept, carrying the
+/// externally observed source socket address.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Qad {
+    /// Externally observed source socket address, e.g. `"203.0.113.2:54321"`.
+    pub addr: String,
+}
+
 /// `Ping` datagram (`"PI"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ping {
@@ -162,6 +177,7 @@ pub fn encode(msg: &LppMessage) -> Result<Vec<u8>, LerpError> {
         LppMessage::ProbeSuccess(m) => encode_tagged("PS", m),
         LppMessage::DirectUpgrade => encode_tag_only("DU"),
         LppMessage::DirectAck => encode_tag_only("DA"),
+        LppMessage::Qad(m) => encode_tagged("QAD", m),
         LppMessage::Ping(m) => encode_tagged("PI", m),
         LppMessage::Pong(m) => encode_tagged("PO", m),
         LppMessage::Close(m) => encode_tagged("CL", m),
@@ -187,6 +203,7 @@ pub fn decode(bytes: &[u8]) -> Result<LppMessage, LerpError> {
         "PS" => Ok(LppMessage::ProbeSuccess(des(bytes)?)),
         "DU" => Ok(LppMessage::DirectUpgrade),
         "DA" => Ok(LppMessage::DirectAck),
+        "QAD" => Ok(LppMessage::Qad(des(bytes)?)),
         "PI" => Ok(LppMessage::Ping(des(bytes)?)),
         "PO" => Ok(LppMessage::Pong(des(bytes)?)),
         "CL" => Ok(LppMessage::Close(des(bytes)?)),

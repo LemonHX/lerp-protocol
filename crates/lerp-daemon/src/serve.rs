@@ -14,16 +14,23 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::net::{IpAddr, SocketAddr};
 
 use tokio::net::TcpStream;
 use wtransport::{ClientConfig, Connection, Endpoint};
 
-use lerp_proto::{identity::SecretKey, routing};
+use lerp_proto::{
+    identity::SecretKey,
+    lpp::{self, LppMessage},
+    routing,
+};
 
 use crate::{
     error::DaemonError,
     forward,
     handshake::{self, send_rejection},
+    holepunch,
+    keepalive,
 };
 
 // ---------------------------------------------------------------------------
@@ -62,6 +69,7 @@ pub struct ServeCfg {
     pub eid_b32: String,
     pub relay_host: String,
     pub relay_secret: [u8; 32],
+    pub quic_port: Option<u16>,
     pub forward_addr: String,
     pub on_connect_hook: Option<String>,
 }
@@ -89,6 +97,8 @@ async fn serve_once(cfg: &ServeCfg) -> Result<(), DaemonError> {
 
     let conn = dial_relay(&url).await?;
 
+    let observed_public_ip = recv_qad_observed_ip(&conn).await;
+
     tracing::info!(eid = %cfg.eid_b32, "serve: relay connected, waiting for peer to pair");
 
     // The relay will wait until an initiator connects with the same SNI token.
@@ -115,18 +125,36 @@ async fn serve_once(cfg: &ServeCfg) -> Result<(), DaemonError> {
         }
     }
 
+    // ── P2P hole-punch (background) + dual-path stream accept ──────────────────
+    // spawn_responder starts:
+    //   1. A relay accept loop → feeds stream_rx
+    //   2. A background holepunch task → on success also feeds stream_rx
+    // The relay is ALWAYS kept alive as fallback.
+    let peer_eid_str = hs.peer_eid.to_base32();
+
     tracing::info!(
         eid = %cfg.eid_b32,
-        peer = %hs.peer_eid.to_base32(),
+        peer = %peer_eid_str,
         forward = %cfg.forward_addr,
-        "serve: accepting streams"
+        "serve: accepting streams (relay + direct via spawn_responder)"
+    );
+
+    let relay_conn = Arc::new(conn);
+    keepalive::spawn_relay_keepalive(Arc::clone(&relay_conn), peer_eid_str.clone());
+
+    let mut stream_rx = holepunch::spawn_responder(
+        Arc::clone(&relay_conn),
+        Arc::clone(&cfg.sk),
+        peer_eid_str,
+        cfg.quic_port,
+        observed_public_ip,
     );
 
     // ── Forward bi-streams to local TCP ───────────────────────────────────
     let keys = Arc::new(hs.session_keys);
     loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
+        match stream_rx.recv().await {
+            Some((send, recv)) => {
                 let forward_addr = cfg.forward_addr.clone();
                 let keys = Arc::clone(&keys);
                 tokio::spawn(async move {
@@ -140,10 +168,49 @@ async fn serve_once(cfg: &ServeCfg) -> Result<(), DaemonError> {
                     }
                 });
             }
-            Err(e) => {
-                tracing::debug!("serve: accept_bi ended: {e}");
+            None => {
+                tracing::debug!("serve: stream channel closed (all connections ended)");
                 return Ok(());
             }
+        }
+    }
+}
+
+async fn recv_qad_observed_ip(conn: &Connection) -> Option<IpAddr> {
+    match tokio::time::timeout(Duration::from_millis(500), conn.receive_datagram()).await {
+        Ok(Ok(dgram)) => {
+            let payload = dgram.payload();
+            match lpp::decode(&payload) {
+                Ok(LppMessage::Qad(qad)) => {
+                    if let Ok(addr) = qad.addr.parse::<SocketAddr>() {
+                        let ip = addr.ip();
+                        tracing::info!(observed = %addr, "serve: got QAD observed address");
+                        Some(ip)
+                    } else if let Ok(ip) = qad.addr.parse::<IpAddr>() {
+                        tracing::info!(observed_ip = %ip, "serve: got QAD observed IP");
+                        Some(ip)
+                    } else {
+                        tracing::warn!(raw = %qad.addr, "serve: QAD payload is not a valid socket address");
+                        None
+                    }
+                }
+                Ok(other) => {
+                    tracing::debug!(?other, "serve: non-QAD datagram received from relay");
+                    None
+                }
+                Err(e) => {
+                    tracing::debug!("serve: failed to decode relay datagram: {e}");
+                    None
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("serve: no relay datagram available yet: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("serve: QAD receive timed out");
+            None
         }
     }
 }

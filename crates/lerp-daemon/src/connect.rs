@@ -7,13 +7,19 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::net::{IpAddr, SocketAddr};
 
 use tokio::net::TcpListener;
 use wtransport::{ClientConfig, Connection, Endpoint};
 
-use lerp_proto::{identity::{EndpointId, SecretKey}, routing, ticket::Ticket};
+use lerp_proto::{
+    identity::{EndpointId, SecretKey},
+    lpp::{self, LppMessage},
+    routing,
+    ticket::Ticket,
+};
 
-use crate::{error::DaemonError, forward, handshake};
+use crate::{error::DaemonError, forward, handshake, holepunch, keepalive};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -58,6 +64,8 @@ pub struct ConnectCfg {
     pub local_port: u16,
     /// Optional meta fields to send in the Hello message.
     pub meta: Option<std::collections::HashMap<String, rmpv::Value>>,
+    /// Optional fixed QUIC port used by the local direct WT server.
+    pub quic_port: Option<u16>,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,13 +133,27 @@ async fn connect_once(cfg: &ConnectCfg) -> Result<(), DaemonError> {
         cfg.local_port
     );
 
+    // ── P2P hole-punch (background) ──────────────────────────────────────────
+    // Returns a watch::Receiver: None = relay only, Some = direct available.
+    // Relay is ALWAYS kept alive as fallback.
+    let peer_eid_str = hs.peer_eid.to_base32();
+    let relay_conn = Arc::new(conn);
+    let observed_public_ip = recv_qad_observed_ip(&relay_conn).await;
+    keepalive::spawn_relay_keepalive(Arc::clone(&relay_conn), peer_eid_str.clone());
+    let direct_rx = holepunch::spawn_initiator(
+        Arc::clone(&relay_conn),
+        Arc::clone(&our_sk),
+        peer_eid_str.clone(),
+        cfg.quic_port,
+        observed_public_ip,
+    );
+
     // ── Local TCP listener ────────────────────────────────────────────────
     let listener = TcpListener::bind(("127.0.0.1", cfg.local_port))
         .await
         .map_err(DaemonError::Io)?;
 
     let keys = Arc::new(hs.session_keys);
-    let conn = Arc::new(conn);
 
     loop {
         let (tcp, peer_addr) = match listener.accept().await {
@@ -142,13 +164,19 @@ async fn connect_once(cfg: &ConnectCfg) -> Result<(), DaemonError> {
             }
         };
 
-        tracing::debug!("connect: local connection from {peer_addr}");
+        let is_direct = direct_rx.borrow().is_some();
+        tracing::debug!(
+            local = %peer_addr,
+            path = if is_direct { "direct" } else { "relay" },
+            "connect: local TCP connection"
+        );
 
         let keys = Arc::clone(&keys);
-        let conn = Arc::clone(&conn);
+        let relay_conn = Arc::clone(&relay_conn);
+        let direct_rx = direct_rx.clone();
 
         tokio::spawn(async move {
-            match open_bistream(&conn).await {
+            match holepunch::open_bi(&relay_conn, &direct_rx).await {
                 Ok((send, recv)) => {
                     forward::run_bistream(send, recv, tcp, &keys).await;
                 }
@@ -157,6 +185,45 @@ async fn connect_once(cfg: &ConnectCfg) -> Result<(), DaemonError> {
                 }
             }
         });
+    }
+}
+
+async fn recv_qad_observed_ip(conn: &Connection) -> Option<IpAddr> {
+    match tokio::time::timeout(Duration::from_millis(500), conn.receive_datagram()).await {
+        Ok(Ok(dgram)) => {
+            let payload = dgram.payload();
+            match lpp::decode(&payload) {
+                Ok(LppMessage::Qad(qad)) => {
+                    if let Ok(addr) = qad.addr.parse::<SocketAddr>() {
+                        let ip = addr.ip();
+                        tracing::info!(observed = %addr, "connect: got QAD observed address");
+                        Some(ip)
+                    } else if let Ok(ip) = qad.addr.parse::<IpAddr>() {
+                        tracing::info!(observed_ip = %ip, "connect: got QAD observed IP");
+                        Some(ip)
+                    } else {
+                        tracing::warn!(raw = %qad.addr, "connect: QAD payload is not a valid socket address");
+                        None
+                    }
+                }
+                Ok(other) => {
+                    tracing::debug!(?other, "connect: non-QAD datagram received from relay");
+                    None
+                }
+                Err(e) => {
+                    tracing::debug!("connect: failed to decode relay datagram: {e}");
+                    None
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("connect: no relay datagram available yet: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("connect: QAD receive timed out");
+            None
+        }
     }
 }
 
@@ -184,25 +251,4 @@ async fn dial_relay(url: &str) -> Result<Connection, DaemonError> {
     Ok(session)
 }
 
-// ---------------------------------------------------------------------------
-// Open a bi-directional stream
-// ---------------------------------------------------------------------------
 
-async fn open_bistream(
-    conn: &Connection,
-) -> Result<
-    (
-        wtransport::stream::SendStream,
-        wtransport::stream::RecvStream,
-    ),
-    DaemonError,
-> {
-    let (send, recv) = conn
-        .open_bi()
-        .await
-        .map_err(|e| DaemonError::WebTransport(e.to_string()))?
-        .await
-        .map_err(|e| DaemonError::WebTransport(e.to_string()))?;
-
-    Ok((send, recv))
-}

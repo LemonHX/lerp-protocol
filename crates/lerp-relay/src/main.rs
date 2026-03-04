@@ -16,12 +16,16 @@ use tracing::info;
 use tracing::warn;
 use wtransport::endpoint::IncomingSession;
 use wtransport::endpoint::SessionRequest;
+use wtransport::Connection;
 use wtransport::Endpoint;
 use wtransport::Identity;
 use wtransport::ServerConfig;
 use wtransport::VarInt;
 
-use lerp_proto::routing;
+use lerp_proto::{
+    lpp::{self, LppMessage, Qad},
+    routing,
+};
 
 use config::RelayConfig;
 use error::RelayError;
@@ -125,6 +129,10 @@ async fn handle_incoming(
     // Accept the WebTransport session (sends HTTP 200 to client).
     let conn = request.accept().await?;
 
+    // Relay-side observed address discovery (QAD): tell endpoint what source
+    // socket address relay sees for this connection.
+    send_qad_notice(&conn);
+
     tracing::info!(
         eid = %eid.to_base32(),
         peer = %conn.remote_address(),
@@ -150,4 +158,23 @@ async fn handle_incoming(
     }
 
     Ok(())
+}
+
+fn send_qad_notice(conn: &Connection) {
+    let observed = conn.remote_address().to_string();
+    let payload = match lpp::encode(&LppMessage::Qad(Qad {
+        addr: observed.clone(),
+    })) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("qad encode failed: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = conn.send_datagram(payload) {
+        warn!(%observed, "failed to send QAD datagram: {e}");
+    } else {
+        tracing::debug!(%observed, "sent QAD datagram");
+    }
 }

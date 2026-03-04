@@ -1,3 +1,5 @@
+- [ ] wasmpack hybrid js/rust module
+
 - [ ] fetch api
 - [ ] front-end fetch server
 - [ ] websocket server over lerp

@@ -33,7 +33,9 @@ mod crypto;
 mod error;
 mod forward;
 mod handshake;
+mod holepunch;
 mod ipc;
+mod keepalive;
 mod keystore;
 mod serve;
 
@@ -286,6 +288,7 @@ fn build_serve_tasks(cfg: &Config) -> Result<Vec<ServeCfg>, DaemonError> {
             eid_b32: eid.to_base32(),
             relay_host,
             relay_secret,
+            quic_port: cfg.daemon.quic_port,
             forward_addr: entry.forward.clone(),
             on_connect_hook: entry.on_connect_hook.clone(),
         });
@@ -301,6 +304,7 @@ fn build_connect_tasks(cfg: &Config) -> Result<Vec<ConnectCfg>, DaemonError> {
             ticket_b64: e.ticket.clone(),
             local_port: e.local_port,
             meta: None,
+            quic_port: cfg.daemon.quic_port,
         })
         .collect())
 }
