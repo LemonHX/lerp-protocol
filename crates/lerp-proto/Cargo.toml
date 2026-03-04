@@ -1,0 +1,25 @@
+[package]
+name = "lerp-proto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# tracing / logging / error handling
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+
+# encoding
+rmp = { workspace = true }
+blake3 = { workspace = true }
+rmp-serde = { workspace = true }
+rmpv = { workspace = true }
+serde_bytes = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+data-encoding = { workspace = true }
+base64 = { workspace = true }
+
+# crypto
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+rand = { workspace = true }

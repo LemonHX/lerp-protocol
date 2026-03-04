@@ -1,0 +1,75 @@
+# lerp-daemon example configuration
+# Copy to ~/.lerp/config.toml and edit to suit.
+
+# ── [daemon] ────────────────────────────────────────────────────────────────
+# Global daemon settings. All fields are optional.
+
+[daemon]
+
+
+
+# ── [[serve]] ───────────────────────────────────────────────────────────────
+# "Server" side: this machine exposes a local service (e.g. SSH) to remote
+# lerp clients that hold a matching ticket.
+#
+# Multiple [[serve]] blocks are allowed — one per local service.
+
+[[serve]]
+# Your endpoint identity (base32).  Generate with:
+#   lerp-daemon new-endpoint
+eid = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+# The local TCP address to forward incoming lerp connections to.
+# Here we expose the local SSH daemon.
+forward = "127.0.0.1:22"
+
+# Relay server that both sides connect through.
+relay = "relay.example.com"
+
+# 32-byte relay shared secret, hex-encoded.
+# Must match the value baked into the ticket you hand to clients.
+# Generate a fresh one with:  openssl rand -hex 32
+relay_sec_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+# Optional: path to a script that authorises each incoming connection.
+# The daemon writes {"peer_eid":"…","meta":{…}} to the script's stdin.
+# The script must print {"accept":true} or {"accept":false,"reason":"…"}.
+# A non-zero exit code is treated as rejection.
+# on_connect_hook = "/usr/local/bin/lerp-authz"
+
+
+# ── Another serve entry (e.g. a local HTTP dev server) ──────────────────────
+
+# [[serve]]
+# eid            = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+# forward        = "127.0.0.1:3000"
+# relay          = "relay.example.com"
+# relay_sec_hex  = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+
+# ── [[connect]] ─────────────────────────────────────────────────────────────
+# "Client" side: connect to a remote endpoint via a ticket and expose it as a
+# local TCP listener so ordinary tools (ssh, curl, …) can reach it.
+#
+# Multiple [[connect]] blocks are allowed — one per remote service.
+
+[[connect]]
+# The lerp ticket you received from the server operator.
+# Generate one on the server with:
+#   lerp-daemon ticket \
+#     --eid  AAAA…  \
+#     --relay relay.example.com \
+#     --relay-sec 000102…1e1f \
+#     --field service=ssh
+ticket = "lerp1_AAAA…base64url_encoded_ticket…"
+
+# Local TCP port to listen on.  After the daemon starts you can do:
+#   ssh -p 2222 user@127.0.0.1
+local_port = 2222
+
+
+# ── Another connect entry (e.g. remote HTTP) ────────────────────────────────
+
+# [[connect]]
+# ticket     = "lerp1_BBBB…"
+# local_port = 8080

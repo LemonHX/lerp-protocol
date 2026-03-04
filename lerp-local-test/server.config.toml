@@ -1,0 +1,18 @@
+# lerp-daemon server config — local test
+# This daemon connects to the relay and exposes the local HTTP server (port 8000)
+# to anyone who has a matching ticket.
+#
+# Fill in `eid` after running:  lerp-daemon new-endpoint
+
+[[serve]]
+# Replace with your endpoint ID (output of `lerp-daemon new-endpoint`).
+eid = "AAOAEMEBNJOFUJ7ZLIWLOE2GSJCRMG7LI54F6U5DBG2TUB7BAZ7A"
+
+# Local service to forward incoming lerp connections to.
+forward = "127.0.0.1:8000"
+
+# Relay running locally.
+relay = "localhost"
+
+# Must match RELAY_SECRET in .env (same hex string).
+relay_sec_hex = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
