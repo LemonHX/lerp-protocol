@@ -156,11 +156,23 @@ async fn connect_once(cfg: &ConnectCfg) -> Result<(), DaemonError> {
     let keys = Arc::new(hs.session_keys);
 
     loop {
-        let (tcp, peer_addr) = match listener.accept().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("connect: tcp accept error: {e}");
-                continue;
+        let (tcp, peer_addr) = tokio::select! {
+            _ = relay_conn.closed() => {
+                tracing::warn!(
+                    port = cfg.local_port,
+                    peer = %peer_eid_str,
+                    "connect: relay connection closed, reconnecting"
+                );
+                return Err(DaemonError::WebTransport("relay connection closed".into()));
+            }
+            accept = listener.accept() => {
+                match accept {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("connect: tcp accept error: {e}");
+                        continue;
+                    }
+                }
             }
         };
 

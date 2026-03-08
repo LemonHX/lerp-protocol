@@ -12,7 +12,7 @@ eid = "AAOAEMEBNJOFUJ7ZLIWLOE2GSJCRMG7LI54F6U5DBG2TUB7BAZ7A"
 forward = "127.0.0.1:8000"
 
 # Relay running locally.
-relay = "localhost"
+relay = "relay.lemonhx.moe"
 
 # Must match RELAY_SECRET in .env (same hex string).
 relay_sec_hex = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"

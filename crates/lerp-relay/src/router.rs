@@ -16,9 +16,11 @@
 //! * **Rule 2**: Never call `dashmap` from inside a synchronous context that already holds
 //!   a shard lock (i.e., don't nest DashMap operations on the same key chain).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
@@ -53,8 +55,15 @@ pub struct PendingTable {
     ///
     /// The `Connection` stored here is a cheap clone (internal Arc); the `oneshot::Sender`
     /// is used to wake up the waiting task once a peer has been paired.
-    pending: DashMap<EndpointId, (Connection, oneshot::Sender<()>)>,
+    pending: DashMap<EndpointId, PendingPeer>,
     pair_timeout: Duration,
+    next_waiter_id: AtomicU64,
+}
+
+struct PendingPeer {
+    conn: Connection,
+    waiter_id: u64,
+    notify_tx: oneshot::Sender<()>,
 }
 
 impl PendingTable {
@@ -63,6 +72,7 @@ impl PendingTable {
         Arc::new(Self {
             pending: DashMap::new(),
             pair_timeout,
+            next_waiter_id: AtomicU64::new(1),
         })
     }
 
@@ -85,45 +95,66 @@ impl PendingTable {
         eid: EndpointId,
         conn: Connection,
     ) -> Result<PairOutcome, RelayError> {
-        // --- Check if a peer is already waiting ---
-        //
-        // IMPORTANT: `remove` returns `Option<(K, V)>`. We extract the value immediately and
-        // let the DashMap guard drop so we never hold it across the `notify_tx.send()` call or
-        // any future await point. (Rule 1)
-        let maybe_waiting = self.pending.remove(&eid).map(|(_, v)| v);
+        let (notify_rx, waiter_id) = loop {
+            match self.pending.entry(eid.clone()) {
+                Entry::Occupied(occupied) => {
+                    // Atomic remove+pair on the same key shard.
+                    let peer = occupied.remove();
+                    let _ = peer.notify_tx.send(());
+                    return Ok(PairOutcome::Initiator {
+                        our_conn: conn,
+                        peer_conn: peer.conn,
+                    });
+                }
+                Entry::Vacant(vacant) => {
+                    let (notify_tx, notify_rx) = oneshot::channel::<()>();
+                    let waiter_id = self.next_waiter_id.fetch_add(1, Ordering::Relaxed);
+                    vacant.insert(PendingPeer {
+                        conn: conn.clone(),
+                        waiter_id,
+                        notify_tx,
+                    });
+                    break (notify_rx, waiter_id);
+                }
+            }
+        };
 
-        if let Some((peer_conn, notify_tx)) = maybe_waiting {
-            // Notify the waiter that it has been paired — fire-and-forget; if it already timed
-            // out the send just fails silently.
-            let _ = notify_tx.send(());
-            return Ok(PairOutcome::Initiator {
-                our_conn: conn,
-                peer_conn,
-            });
-        }
-
-        // --- No peer yet — register ourselves as the waiter ---
-        let (notify_tx, notify_rx) = oneshot::channel::<()>();
-
-        // Insert and immediately drop the DashMap entry guard (Rule 1: no guard across await).
-        self.pending.insert(eid.clone(), (conn.clone(), notify_tx));
-
-        // Now it is safe to await — no DashMap guard is held.
         match timeout(self.pair_timeout, notify_rx).await {
             Ok(Ok(())) => {
                 // Peer arrived and already removed our entry; it will run the pipe.
                 Ok(PairOutcome::Waiter)
             }
             Ok(Err(_)) => {
-                // Sender dropped without sending — shouldn't happen; treat as timeout.
-                self.pending.remove(&eid);
-                Ok(PairOutcome::Timeout)
+                // Channel closed while we waited. If our exact waiter entry still exists,
+                // we timed out; otherwise we were already paired.
+                if self.try_remove_if_still_waiting(&eid, waiter_id) {
+                    Ok(PairOutcome::Timeout)
+                } else {
+                    Ok(PairOutcome::Waiter)
+                }
             }
             Err(_elapsed) => {
-                // Timeout — remove our stale entry.
-                self.pending.remove(&eid);
-                Ok(PairOutcome::Timeout)
+                // Timeout — remove only if our exact waiter entry is still pending.
+                if self.try_remove_if_still_waiting(&eid, waiter_id) {
+                    Ok(PairOutcome::Timeout)
+                } else {
+                    Ok(PairOutcome::Waiter)
+                }
             }
+        }
+    }
+
+    fn try_remove_if_still_waiting(&self, eid: &EndpointId, waiter_id: u64) -> bool {
+        match self.pending.entry(eid.clone()) {
+            Entry::Occupied(occupied) => {
+                if occupied.get().waiter_id == waiter_id {
+                    occupied.remove();
+                    true
+                } else {
+                    false
+                }
+            }
+            Entry::Vacant(_) => false,
         }
     }
 }

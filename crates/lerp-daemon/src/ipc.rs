@@ -248,6 +248,10 @@ async fn handle_ticket(
         None => None,
     };
 
+    if relay.is_some() != relay_secret.is_some() {
+        return IpcResponse::err("relay and relay_sec_hex must both be set or both be omitted");
+    }
+
     // Convert app_fields to msgpack-compatible map.
     let mut meta_map = std::collections::HashMap::new();
     for (k, v) in &app_fields {
@@ -256,12 +260,8 @@ async fn handle_ticket(
 
     // Build and encode the ticket.
     let mut ticket = Ticket::new(&eid);
-    if let Some(host) = relay {
-        if let Some(secret) = relay_secret {
-            ticket = ticket.with_relay(host, secret);
-        } else {
-            ticket.lerp_rly = Some(host);
-        }
+    if let (Some(host), Some(secret)) = (relay, relay_secret) {
+        ticket = ticket.with_relay(host, secret);
     }
     ticket.app_fields = meta_map;
 

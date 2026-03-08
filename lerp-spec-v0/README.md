@@ -19,6 +19,7 @@ lerp 是一个点对点加密通信协议，目标是让任意两个节点之间
 | [07-lerp-client.md](07-lerp-client.md) | lerp-client 规范（浏览器） |
 | [08-security.md](08-security.md) | 安全分析、威胁模型 |
 | [09-internal-protocol.md](09-internal-protocol.md) | LPP 内部协议、消息定义、状态机 |
+| [10-hrelay.md](10-hrelay.md) | hrelay-server：HTTP 反向代理 Relay，浏览器直接访问 lerp 后端服务 |
 
 ---
 

@@ -297,16 +297,27 @@ fn build_serve_tasks(cfg: &Config) -> Result<Vec<ServeCfg>, DaemonError> {
 }
 
 fn build_connect_tasks(cfg: &Config) -> Result<Vec<ConnectCfg>, DaemonError> {
-    Ok(cfg
-        .connect
-        .iter()
-        .map(|e| ConnectCfg {
-            ticket_b64: e.ticket.clone(),
-            local_port: e.local_port,
-            meta: None,
+    let mut tasks = Vec::with_capacity(cfg.connect.len());
+
+    for entry in &cfg.connect {
+        let ticket = lerp_proto::ticket::Ticket::decode(&entry.ticket)
+            .map_err(|e| DaemonError::Config(format!("connect entry has invalid ticket: {e}")))?;
+
+        let meta = if ticket.app_fields.is_empty() {
+            None
+        } else {
+            Some(ticket.app_fields)
+        };
+
+        tasks.push(ConnectCfg {
+            ticket_b64: entry.ticket.clone(),
+            local_port: entry.local_port,
+            meta,
             quic_port: cfg.daemon.quic_port,
-        })
-        .collect())
+        });
+    }
+
+    Ok(tasks)
 }
 
 // ---------------------------------------------------------------------------
